@@ -84,6 +84,31 @@ function initialize(root) {
     return ui.input_kinds?.[kind] || kind
   }
 
+  // A report describes the exact text it was run against. The moment that text or
+  // the forced file type changes, the score, findings and exports on screen belong
+  // to something else, so they are torn down rather than left to look current.
+  // Without this a visitor could paste file B and export a report for file A.
+  function invalidate() {
+    report = null
+    exportActions.hidden = true
+    errorNode.hidden = true
+    summary.hidden = true
+    delete summary.dataset.level
+    summaryLabel.textContent = ''
+    summaryDetail.textContent = ''
+    list.replaceChildren()
+    score.textContent = ui.not_run
+    empty.hidden = false
+  }
+
+  function showDetectedKind() {
+    if (kindSelect.value !== 'auto') {
+      inputKind.textContent = describeKind(kindSelect.value)
+      return
+    }
+    inputKind.textContent = input.value.trim() ? describeKind(detectInputKind(input.value)) : ui.waiting
+  }
+
   function findingNode(item) {
     const article = document.createElement('article')
     article.className = 'tool-risk-finding'
@@ -134,7 +159,9 @@ function initialize(root) {
     if (button.dataset.action === 'load-sample') {
       input.value = SAMPLE
       kindSelect.value = 'auto'
-      inputKind.textContent = describeKind(detectInputKind(SAMPLE))
+      // Setting value in code fires no input event, so invalidate explicitly.
+      invalidate()
+      showDetectedKind()
       input.focus()
     } else if (button.dataset.action === 'scan') {
       run()
@@ -154,8 +181,13 @@ function initialize(root) {
   })
 
   input.addEventListener('input', () => {
-    if (kindSelect.value !== 'auto') return
-    inputKind.textContent = input.value.trim() ? describeKind(detectInputKind(input.value)) : ui.waiting
+    invalidate()
+    showDetectedKind()
+  })
+
+  kindSelect.addEventListener('change', () => {
+    invalidate()
+    showDetectedKind()
   })
 
   input.addEventListener('keydown', (event) => {

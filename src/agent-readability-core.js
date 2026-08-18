@@ -5,7 +5,7 @@
 // which hard-fails this site's own production build. Keep the two in step: if a rule
 // changes meaning there, change it here and bump CHECKER_VERSION.
 
-export const CHECKER_VERSION = '0.1.3'
+export const CHECKER_VERSION = '0.1.4'
 export const SCHEMA_VERSION = '1.0.0'
 
 export const INPUT_KINDS = Object.freeze({

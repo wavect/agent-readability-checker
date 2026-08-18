@@ -479,3 +479,163 @@ test('scoring is bounded and monotonic', () => {
   assert.ok(worst.score <= 100)
 })
 
+// ── browser adapter ──────────────────────────────────────────────────────────
+// A tiny DOM stand-in, so the staleness guarantee is exercised rather than
+// asserted by pattern match. The adapter only touches this much of the DOM.
+class StubNode {
+  constructor(tag = 'div') {
+    this.tag = tag
+    this.children = []
+    this.dataset = {}
+    this.textContent = ''
+    this.className = ''
+    this.value = ''
+    this.hidden = false
+    this.listeners = new Map()
+  }
+
+  addEventListener(type, handler) {
+    if (!this.listeners.has(type)) this.listeners.set(type, [])
+    this.listeners.get(type).push(handler)
+  }
+
+  dispatch(type, event = {}) {
+    for (const handler of this.listeners.get(type) ?? []) handler(event)
+  }
+
+  append(...nodes) { this.children.push(...nodes) }
+  replaceChildren(...nodes) { this.children = [...nodes] }
+  focus() {}
+}
+
+const STUB_UI = {
+  not_run: 'Not checked',
+  waiting: 'Waiting for input',
+  empty: 'Paste a file',
+  result_label: 'Readability score',
+  finding_count: '%d findings across %c checks',
+  no_findings: 'Nothing failed across %c checks',
+  copy_json: 'Copy JSON',
+  copied: 'Copied',
+  copy_error: 'Clipboard unavailable',
+  scan_error: 'The file could not be checked.',
+  empty_input: 'Paste a file first.',
+  heuristic: 'Heuristic',
+  critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low',
+  grades: { legible: 'Legible', 'mostly-legible': 'Mostly legible', patchy: 'Patchy', opaque: 'Opaque' },
+  input_kinds: { 'robots-txt': 'robots.txt', 'llms-txt': 'llms.txt', markdown: 'Markdown mirror', html: 'Page HTML' },
+}
+
+const stub = (() => {
+  const nodes = {
+    config: new StubNode('script'),
+    input: new StubNode('textarea'),
+    kind: new StubNode('select'),
+    inputKind: new StubNode('span'),
+    empty: new StubNode('div'),
+    summary: new StubNode('div'),
+    summaryLabel: new StubNode('strong'),
+    summaryDetail: new StubNode('p'),
+    score: new StubNode('span'),
+    list: new StubNode('div'),
+    exportActions: new StubNode('div'),
+    error: new StubNode('p'),
+  }
+  nodes.config.textContent = JSON.stringify(STUB_UI)
+  nodes.kind.value = 'auto'
+  const map = new Map([
+    ['.tool-app-config', nodes.config],
+    ['[data-field="input"]', nodes.input],
+    ['[data-field="kind"]', nodes.kind],
+    ['[data-input-kind]', nodes.inputKind],
+    ['[data-findings-empty]', nodes.empty],
+    ['[data-summary]', nodes.summary],
+    ['[data-summary-label]', nodes.summaryLabel],
+    ['[data-summary-detail]', nodes.summaryDetail],
+    ['[data-score]', nodes.score],
+    ['[data-finding-list]', nodes.list],
+    ['[data-export-actions]', nodes.exportActions],
+    ['[data-error]', nodes.error],
+  ])
+  const root = new StubNode('div')
+  root.querySelector = selector => map.get(selector) ?? null
+  return { root, nodes }
+})()
+
+let objectUrlCalls = 0
+globalThis.document = {
+  querySelectorAll: () => [stub.root],
+  createElement: tag => new StubNode(tag),
+  body: new StubNode('body'),
+}
+globalThis.URL.createObjectURL = () => { objectUrlCalls += 1; return 'blob:stub' }
+globalThis.URL.revokeObjectURL = () => {}
+
+// Import after the stub document exists: the adapter initializes on import.
+await import('../src/browser-app.js')
+
+const click = action => stub.root.dispatch('click', { target: { closest: () => ({ dataset: { action } }) } })
+const BLOCKED = 'User-agent: OAI-SearchBot\nDisallow: /\n'
+
+test('the adapter renders a result after a check', () => {
+  stub.nodes.input.value = BLOCKED
+  click('scan')
+  assert.equal(stub.nodes.summary.hidden, false)
+  assert.equal(stub.nodes.exportActions.hidden, false)
+  assert.equal(stub.nodes.empty.hidden, true)
+  assert.match(stub.nodes.score.textContent, /\/100$/)
+  assert.ok(stub.nodes.list.children.length > 0, 'findings are rendered')
+})
+
+test('editing the input invalidates the previous report and its exports', () => {
+  stub.nodes.input.value = BLOCKED
+  click('scan')
+  assert.equal(stub.nodes.exportActions.hidden, false, 'precondition: a report is on screen')
+
+  stub.nodes.input.value = 'User-agent: *\nAllow: /\n\nSitemap: https://example.com/sitemap.xml\n'
+  stub.nodes.input.dispatch('input')
+
+  assert.equal(stub.nodes.exportActions.hidden, true, 'exports must be withdrawn')
+  assert.equal(stub.nodes.summary.hidden, true, 'the old score must be hidden')
+  assert.equal(stub.nodes.summary.dataset.level, undefined, 'the old severity styling must go')
+  assert.equal(stub.nodes.list.children.length, 0, 'the old findings must be cleared')
+  assert.equal(stub.nodes.score.textContent, STUB_UI.not_run)
+  assert.equal(stub.nodes.empty.hidden, false, 'the placeholder returns')
+  assert.equal(stub.nodes.inputKind.textContent, STUB_UI.input_kinds['robots-txt'], 'the detected kind still updates')
+})
+
+test('a stale report cannot be exported after the input changes', () => {
+  stub.nodes.input.value = BLOCKED
+  click('scan')
+  stub.nodes.input.value = '# Something else entirely\n'
+  stub.nodes.input.dispatch('input')
+
+  const before = objectUrlCalls
+  click('export-json')
+  click('export-markdown')
+  assert.equal(objectUrlCalls, before, 'no file may be produced from a discarded report')
+})
+
+test('changing the forced file type invalidates the report too', () => {
+  stub.nodes.input.value = BLOCKED
+  click('scan')
+  assert.equal(stub.nodes.exportActions.hidden, false)
+
+  stub.nodes.kind.value = 'markdown'
+  stub.nodes.kind.dispatch('change')
+  assert.equal(stub.nodes.exportActions.hidden, true)
+  assert.equal(stub.nodes.inputKind.textContent, STUB_UI.input_kinds.markdown, 'the badge follows the forced type')
+  stub.nodes.kind.value = 'auto'
+})
+
+test('loading the sample invalidates the report, despite firing no input event', () => {
+  stub.nodes.input.value = BLOCKED
+  click('scan')
+  assert.equal(stub.nodes.exportActions.hidden, false)
+
+  click('load-sample')
+  assert.equal(stub.nodes.exportActions.hidden, true)
+  assert.equal(stub.nodes.summary.hidden, true)
+  assert.ok(stub.nodes.input.value.includes('User-agent:'), 'the sample was loaded')
+})
+

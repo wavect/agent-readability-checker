@@ -5,7 +5,7 @@
 // which hard-fails this site's own production build. Keep the two in step: if a rule
 // changes meaning there, change it here and bump CHECKER_VERSION.
 
-export const CHECKER_VERSION = '0.1.2'
+export const CHECKER_VERSION = '0.1.3'
 export const SCHEMA_VERSION = '1.0.0'
 
 export const INPUT_KINDS = Object.freeze({
@@ -73,8 +73,15 @@ function truncate(value, limit = 160) {
   return flat.length > limit ? `${flat.slice(0, limit - 1)}…` : flat
 }
 
+// HTML permits whitespace around the `=` in an attribute assignment, so every
+// matcher here has to tolerate it. Minified output is the common case, but a
+// hand-authored or pretty-printed page is valid and must not score as though the
+// attribute were missing: treating `rel = "canonical"` as absent turned a complete
+// page into 26/100.
+const ASSIGN = '\\s*=\\s*'
+
 function attribute(tag, name) {
-  const match = tag.match(new RegExp(`\\b${name}=(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i'))
+  const match = tag.match(new RegExp(`\\b${name}${ASSIGN}(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i'))
   return match?.[1] ?? match?.[2] ?? match?.[3] ?? ''
 }
 
@@ -217,10 +224,15 @@ function checkRobots(text) {
 
   if (wildcard && blocksEverything(wildcard.rules)) {
     const uncovered = RETRIEVAL_AGENTS.filter(agent => !named.has(agent))
+    // When every fetcher this tool knows about has its own group, saying "0 are
+    // blocked by inheritance" argues against the severity. The finding still
+    // stands, because the wildcard blocks every fetcher the file does not name.
     findings.push(finding('AR103', 'critical', 'access',
       'The wildcard group blocks the whole site.',
       'User-agent: * → Disallow: /',
-      `Every crawler without its own group falls back to the wildcard, so ${uncovered.length} of the retrieval fetchers this tool knows about are blocked by inheritance. Give the fetchers you want an explicit group, or lift the wildcard disallow.`))
+      uncovered.length
+        ? `Every crawler without its own group falls back to the wildcard, so ${uncovered.length} of the retrieval fetchers this tool knows about are blocked by inheritance (${uncovered.slice(0, 3).join(', ')}${uncovered.length > 3 ? ', and others' : ''}). Give the fetchers you want an explicit group, or lift the wildcard disallow.`
+        : 'Every retrieval fetcher this tool knows about has its own group here, so none of them inherits this rule. It still blocks every fetcher the file does not name, including ones that do not exist yet, so lift the wildcard disallow unless withholding the site from unknown clients is deliberate.'))
   } else {
     passed.push('AR103')
   }
@@ -525,7 +537,13 @@ function checkHtml(text) {
     passed.push('AR402')
   }
 
-  const jsonLdBlocks = [...source.matchAll(/<script\b[^>]*\btype=(?:"application\/ld\+json"|'application\/ld\+json'|application\/ld\+json)[^>]*>([\s\S]*?)<\/script>/gi)]
+  // Built from ASSIGN for the same reason as attribute(): a spaced `type = "..."`
+  // must not read as a page with no structured data at all.
+  const jsonLdPattern = new RegExp(
+    `<script\\b[^>]*\\btype${ASSIGN}(?:"application/ld\\+json"|'application/ld\\+json'|application/ld\\+json)[^>]*>([\\s\\S]*?)</script>`,
+    'gi',
+  )
+  const jsonLdBlocks = [...source.matchAll(jsonLdPattern)]
   if (!jsonLdBlocks.length) {
     findings.push(finding('AR403', 'critical', 'structured',
       'No JSON-LD.',

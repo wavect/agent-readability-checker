@@ -1,6 +1,6 @@
 {
   "name": "@wavect/agent-readability-checker",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Deterministic agent-readability rules for robots.txt, llms.txt, Markdown mirrors, and page HTML, plus Wavect's browser UI adapter",
   "type": "module",
   "private": false,

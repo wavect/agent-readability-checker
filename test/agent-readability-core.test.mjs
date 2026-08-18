@@ -65,6 +65,24 @@ test('a wildcard disallow is critical because retrieval fetchers inherit it', ()
   assert.equal(report.findings.find(finding => finding.ruleId === 'AR103').severity, 'critical')
 })
 
+test('the wildcard remediation does not argue against its own severity', () => {
+  // With every known fetcher explicitly allowed, "0 are blocked by inheritance"
+  // would undercut the critical finding it belongs to.
+  const groups = RETRIEVAL_AGENTS.map(agent => `User-agent: ${agent}\nAllow: /\n`).join('\n')
+  const report = checkFixture(`${groups}\nUser-agent: *\nDisallow: /\n\nSitemap: https://example.com/sitemap.xml\n`)
+  const wildcard = report.findings.find(item => item.ruleId === 'AR103')
+  assert.ok(wildcard, 'the wildcard block is still critical')
+  assert.equal(wildcard.severity, 'critical')
+  assert.ok(!/\b0 of the\b/.test(wildcard.remediation), 'must not claim zero fetchers are affected')
+  assert.match(wildcard.remediation, /does not name/)
+
+  // The common case still counts and names examples.
+  const bare = checkFixture('User-agent: *\nDisallow: /\n\nSitemap: https://example.com/sitemap.xml\n')
+  const counted = bare.findings.find(item => item.ruleId === 'AR103')
+  assert.match(counted.remediation, new RegExp(`${RETRIEVAL_AGENTS.length} of the retrieval fetchers`))
+  assert.match(counted.remediation, /oai-searchbot/)
+})
+
 test('an allow-all override cancels the blanket disallow', () => {
   const report = checkFixture('User-agent: *\nDisallow: /\nAllow: /\n\nSitemap: https://example.com/sitemap.xml\n')
   assert.ok(!ruleIds(report).includes('AR103'))
@@ -350,6 +368,69 @@ test('a complete head satisfies the discovery, structured and entity rules', () 
   const report = checkFixture(html)
   assert.deepEqual(ruleIds(report), [])
   assert.equal(report.score, 100)
+})
+
+// HTML permits whitespace around the `=` in an attribute assignment. Compact
+// output is the common case, but a hand-authored or pretty-printed page is valid
+// and must not score as though the attributes were absent.
+const COMPLETE_HEAD = (assign = '=') => {
+  const ld = JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type': 'Organization',
+    '@id': 'https://wavect.io/#organization',
+    name: 'Wavect',
+    sameAs: ['https://www.wikidata.org/wiki/Q139795658'],
+  })
+  const prose = 'Enough served prose that the client-render heuristic stays quiet, because it counts words outside script tags and wants at least fifty of them before it will trust the page at all, which this sentence comfortably provides.'
+  return [
+    `<!doctype html><html lang${assign}"en"><head>`,
+    '<title>Agent readability</title>',
+    `<meta name${assign}"description" content${assign}"A description.">`,
+    `<link rel${assign}"canonical" href${assign}"https://wavect.io/x/">`,
+    `<link rel${assign}"alternate" type${assign}"text/markdown" href${assign}"/x.md">`,
+    `<script type${assign}"application/ld+json">${ld}</script>`,
+    `</head><body><h1>Heading</h1><p>${prose}</p></body></html>`,
+  ].join('\n')
+}
+
+test('whitespace around attribute assignments is accepted', () => {
+  const compact = checkFixture(COMPLETE_HEAD('='))
+  assert.deepEqual(ruleIds(compact), [], 'control: compact attributes are clean')
+
+  for (const assign of [' = ', '= ', ' =', '\n  =\n  ']) {
+    const report = checkFixture(COMPLETE_HEAD(assign))
+    assert.deepEqual(
+      ruleIds(report), [],
+      `attributes written with ${JSON.stringify(assign)} must score the same as compact ones`,
+    )
+    assert.equal(report.score, 100)
+  }
+})
+
+test('spaced assignments work for single-quoted and unquoted values', () => {
+  const report = checkFixture([
+    "<!doctype html><html lang = en><head>",
+    '<title>T</title>',
+    "<meta name = 'description' content = 'A description.'>",
+    "<link rel = 'canonical' href = 'https://wavect.io/x/'>",
+    "<link rel = 'alternate' type = 'text/markdown' href = '/x.md'>",
+    "<script type = 'application/ld+json'>" + JSON.stringify({ '@context': 'https://schema.org', '@type': 'Organization', '@id': 'x', name: 'W', sameAs: ['y'] }) + '</script>',
+    '</head><body><h1>H</h1><p>Enough served prose that the client-render heuristic stays quiet, because it counts words outside script tags and wants at least fifty of them before it trusts the page, which this sentence provides.</p></body></html>',
+  ].join('\n'))
+  assert.deepEqual(ruleIds(report), [])
+})
+
+test('a spaced JSON-LD type is still parsed, and still validated', () => {
+  const broken = checkFixture("<html lang='en'><head><title>T</title><script type = \"application/ld+json\">{ not json }</script></head><body>text</body></html>")
+  const invalid = broken.findings.find(finding => finding.ruleId === 'AR404')
+  assert.ok(invalid, 'a spaced type must not hide invalid JSON-LD')
+  assert.equal(invalid.severity, 'critical')
+  assert.ok(!ruleIds(broken).includes('AR403'), 'the block was found, so it is not reported as absent')
+})
+
+test('hreflang is not mistaken for lang', () => {
+  const report = checkFixture('<!doctype html><html><head><link rel="alternate" hreflang="de" href="/de/"><title>T</title></head><body>b</body></html>')
+  assert.ok(ruleIds(report).includes('AR413'), 'hreflang must not satisfy the html lang check')
 })
 
 test('nosnippet is treated as harshly as noindex', () => {

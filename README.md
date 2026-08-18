@@ -27,6 +27,8 @@ Per [RFC 9309](https://www.rfc-editor.org/rfc/rfc9309.html) 2.2.1, when the same
 
 The catalog separates crawlers that collect training data from fetchers that retrieve a page in order to answer and cite it, because most `robots.txt` files conflate the two. Blocking `GPTBot` is a licensing decision and scores as a low informational finding. Blocking `OAI-SearchBot` removes you from answers and scores as critical.
 
+That separation holds throughout, not just in the blanket-disallow check. `AR107` (mirrors disallowed) fires only for the wildcard or a retrieval fetcher, so keeping a training-only crawler away from your `.md` mirrors is not scored as a visibility failure either.
+
 ## Usage
 
 ```js

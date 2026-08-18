@@ -152,6 +152,55 @@ test('comments and a missing sitemap are handled', () => {
 test('disallowing the markdown mirrors is caught', () => {
   const report = checkFixture('User-agent: *\nDisallow: /*.md\n\nSitemap: https://example.com/sitemap.xml\n')
   assert.ok(ruleIds(report).includes('AR107'))
+  assert.equal(report.findings.find(finding => finding.ruleId === 'AR107').severity, 'high')
+})
+
+// AR107 exists to say "you published mirrors and then blocked the fetchers that
+// would read them". A training-only crawler blocked from the mirrors is the same
+// licensing choice AR104 scores as low, so charging a high finding for it would
+// contradict the contract this tool states everywhere else.
+test('a mirror block on a training-only crawler is not a visibility failure', () => {
+  const report = checkFixture('User-agent: GPTBot\nDisallow: /*.md\n\nSitemap: https://example.com/sitemap.xml\n')
+  assert.ok(!ruleIds(report).includes('AR107'), 'training-only mirror blocks must not fire AR107')
+  assert.equal(report.score, 100)
+  assert.equal(report.grade, GRADES.legible)
+})
+
+test('a training opt-out that also names the mirrors still grades legible', () => {
+  const report = checkFixture('User-agent: GPTBot\nDisallow: /\nDisallow: /*.md\n\nSitemap: https://example.com/sitemap.xml\n')
+  assert.deepEqual(ruleIds(report), ['AR104'], 'only the licensing-choice finding')
+  assert.equal(report.grade, GRADES.legible)
+})
+
+test('AR107 fires for the wildcard and for retrieval fetchers', () => {
+  for (const agent of ['*', 'OAI-SearchBot', 'PerplexityBot']) {
+    const report = checkFixture(`User-agent: ${agent}\nDisallow: /*.md\n\nSitemap: https://example.com/sitemap.xml\n`)
+    assert.ok(ruleIds(report).includes('AR107'), `${agent} should fire AR107`)
+  }
+  const llms = checkFixture('User-agent: Claude-User\nDisallow: /llms.txt\n\nSitemap: https://example.com/sitemap.xml\n')
+  assert.ok(ruleIds(llms).includes('AR107'))
+})
+
+test('AR107 evidence names only the groups that matter', () => {
+  const report = checkFixture([
+    'User-agent: GPTBot',
+    'Disallow: /*.md',
+    '',
+    'User-agent: *',
+    'Disallow: /*.md',
+    '',
+    'Sitemap: https://example.com/sitemap.xml',
+    '',
+  ].join('\n'))
+  const blocked = report.findings.find(finding => finding.ruleId === 'AR107')
+  assert.ok(blocked)
+  assert.match(blocked.evidence, /\*/)
+  assert.ok(!/gptbot/i.test(blocked.evidence), 'the training group is not the reason this fires')
+})
+
+test('a training-only mirror block beside a permissive wildcard stays clean', () => {
+  const report = checkFixture('User-agent: GPTBot\nDisallow: /*.md\n\nUser-agent: *\nDisallow: /admin\n\nSitemap: https://example.com/sitemap.xml\n')
+  assert.deepEqual(ruleIds(report), [])
 })
 
 test('a well formed llms.txt passes', () => {

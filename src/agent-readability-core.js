@@ -5,7 +5,7 @@
 // which hard-fails this site's own production build. Keep the two in step: if a rule
 // changes meaning there, change it here and bump CHECKER_VERSION.
 
-export const CHECKER_VERSION = '0.1.1'
+export const CHECKER_VERSION = '0.1.2'
 export const SCHEMA_VERSION = '1.0.0'
 
 export const INPUT_KINDS = Object.freeze({
@@ -252,12 +252,19 @@ function checkRobots(text) {
     }
   }
 
+  // Only groups that can actually serve an answer count here. A training-only
+  // crawler kept away from the mirrors is the same licensing choice AR104 scores
+  // as low, so charging a high finding for it would contradict the separation this
+  // catalog makes everywhere else. The wildcard counts because any retrieval
+  // fetcher without its own group, including ones this list has never heard of,
+  // inherits it.
   const mirrorBlocks = []
-  for (const group of groups) {
+  for (const [agent, group] of merged) {
+    if (agent !== '*' && !RETRIEVAL_AGENTS.includes(agent)) continue
     for (const rule of group.rules) {
       if (rule.field !== 'disallow') continue
       if (/\.md(?:\$|$)|\*\.md|llms.*\.txt/i.test(rule.value)) {
-        mirrorBlocks.push(`${group.agents.join(', ')} → Disallow: ${rule.value}`)
+        mirrorBlocks.push(`${agent} → Disallow: ${rule.value}`)
       }
     }
   }
@@ -265,7 +272,9 @@ function checkRobots(text) {
     findings.push(finding('AR107', 'high', 'access',
       'The machine-readable mirrors are themselves disallowed.',
       mirrorBlocks.join(' | '),
-      'Blocking .md mirrors or llms.txt defeats the reason for publishing them. These are the cheapest, cleanest copies an agent can read. Allow them explicitly.'))
+      'Blocking .md mirrors or llms.txt defeats the reason for publishing them. These are the cheapest, cleanest copies an agent can read. Allow them explicitly for the fetchers that serve answers.'))
+  } else {
+    passed.push('AR107')
   }
 
   const delayed = [...merged].filter(([agent, group]) => group.crawlDelay && RETRIEVAL_AGENTS.includes(agent))

@@ -77,6 +77,71 @@ test('consecutive user-agent lines share one rule block', () => {
   assert.match(blocked.evidence, /perplexitybot/i)
 })
 
+// RFC 9309 2.2.1: when the same user-agent token appears in more than one group,
+// the rules of all those groups are merged and treated as one group. Evaluating
+// only the last group let a later narrow rule mask an earlier blanket disallow,
+// which is a false negative on the check this tool exists to make.
+test('duplicate groups for one agent are merged, not overwritten', () => {
+  const report = checkFixture([
+    'User-agent: OAI-SearchBot',
+    'Disallow: /',
+    '',
+    'User-agent: OAI-SearchBot',
+    'Disallow: /private',
+    '',
+    'Sitemap: https://example.com/sitemap.xml',
+    '',
+  ].join('\n'))
+  const blocked = report.findings.find(finding => finding.ruleId === 'AR102')
+  assert.ok(blocked, 'the earlier Disallow: / must still be seen')
+  assert.equal(blocked.severity, 'critical')
+})
+
+test('merging is order independent', () => {
+  const narrowFirst = checkFixture('User-agent: PerplexityBot\nDisallow: /private\n\nUser-agent: PerplexityBot\nDisallow: /\n')
+  const blanketFirst = checkFixture('User-agent: PerplexityBot\nDisallow: /\n\nUser-agent: PerplexityBot\nDisallow: /private\n')
+  assert.ok(ruleIds(narrowFirst).includes('AR102'))
+  assert.ok(ruleIds(blanketFirst).includes('AR102'))
+})
+
+test('every wildcard group is merged, not just the first', () => {
+  const report = checkFixture('User-agent: *\nDisallow: /admin\n\nUser-agent: *\nDisallow: /\n\nSitemap: https://example.com/sitemap.xml\n')
+  assert.ok(ruleIds(report).includes('AR103'), 'a later wildcard Disallow: / must be seen')
+})
+
+test('an Allow in a duplicate group still cancels the blanket disallow', () => {
+  const report = checkFixture('User-agent: *\nDisallow: /\n\nUser-agent: *\nAllow: /\n\nSitemap: https://example.com/sitemap.xml\n')
+  assert.ok(!ruleIds(report).includes('AR103'), 'merged rules include the Allow override')
+})
+
+test('duplicate training groups merge too', () => {
+  const report = checkFixture('User-agent: GPTBot\nDisallow: /\n\nUser-agent: GPTBot\nDisallow: /docs\n\nSitemap: https://example.com/sitemap.xml\n')
+  const training = report.findings.find(finding => finding.ruleId === 'AR104')
+  assert.ok(training, 'the blanket training block must still be seen')
+  assert.equal(training.severity, 'low')
+})
+
+test('crawl-delay ends a group, so the next user-agent starts a new one', () => {
+  // Otherwise the following agent's Disallow: / is attributed to this one, which
+  // reports a retrieval fetcher as blocked when it is not.
+  const report = checkFixture([
+    'User-agent: OAI-SearchBot',
+    'Crawl-delay: 5',
+    'User-agent: SomeOtherBot',
+    'Disallow: /',
+    '',
+    'Sitemap: https://example.com/sitemap.xml',
+    '',
+  ].join('\n'))
+  assert.ok(!ruleIds(report).includes('AR102'), 'OAI-SearchBot is not disallowed here')
+  assert.ok(ruleIds(report).includes('AR108'), 'its crawl-delay is still reported')
+})
+
+test('a crawl-delay in a duplicate group is still attributed to the agent', () => {
+  const report = checkFixture('User-agent: PerplexityBot\nDisallow: /private\n\nUser-agent: PerplexityBot\nCrawl-delay: 10\n\nSitemap: https://example.com/sitemap.xml\n')
+  assert.ok(ruleIds(report).includes('AR108'))
+})
+
 test('comments and a missing sitemap are handled', () => {
   const report = checkFixture('# a comment\nUser-agent: *\nDisallow: /admin/ # trailing comment\n')
   const ids = ruleIds(report)

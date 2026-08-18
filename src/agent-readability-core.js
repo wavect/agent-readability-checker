@@ -5,7 +5,7 @@
 // which hard-fails this site's own production build. Keep the two in step: if a rule
 // changes meaning there, change it here and bump CHECKER_VERSION.
 
-export const CHECKER_VERSION = '0.1.0'
+export const CHECKER_VERSION = '0.1.1'
 export const SCHEMA_VERSION = '1.0.0'
 
 export const INPUT_KINDS = Object.freeze({
@@ -134,19 +134,48 @@ function parseRobots(text) {
       continue
     }
     if (field === 'user-agent') {
-      // Consecutive user-agent lines share one rule block.
-      if (current && current.rules.length === 0) current.agents.push(value.toLowerCase())
+      // Consecutive user-agent lines share one rule block. Any directive ends
+      // that run, crawl-delay included: without this the next user-agent line is
+      // folded into this group and inherits its rules, which reports an agent as
+      // blocked when only its neighbour is.
+      if (current && !current.sawDirective) current.agents.push(value.toLowerCase())
       else {
-        current = { agents: [value.toLowerCase()], rules: [], crawlDelay: null }
+        current = { agents: [value.toLowerCase()], rules: [], crawlDelay: null, sawDirective: false }
         groups.push(current)
       }
       continue
     }
     if (!current) continue
-    if (field === 'disallow' || field === 'allow') current.rules.push({ field, value })
-    if (field === 'crawl-delay') current.crawlDelay = value
+    if (field === 'disallow' || field === 'allow') {
+      current.rules.push({ field, value })
+      current.sawDirective = true
+    }
+    if (field === 'crawl-delay') {
+      current.crawlDelay = value
+      current.sawDirective = true
+    }
   }
   return { groups, sitemaps }
+}
+
+// RFC 9309 2.2.1: if the same user-agent token appears in more than one group,
+// the rules of all those groups MUST be merged and treated as a single group.
+// Keeping only the last group let a later narrow rule mask an earlier
+// `Disallow: /`, scoring a fully blocked site as clean.
+function mergeGroups(groups) {
+  const merged = new Map()
+  for (const group of groups) {
+    for (const agent of group.agents) {
+      const existing = merged.get(agent)
+      if (existing) {
+        existing.rules.push(...group.rules)
+        if (existing.crawlDelay === null) existing.crawlDelay = group.crawlDelay
+      } else {
+        merged.set(agent, { agents: [agent], rules: [...group.rules], crawlDelay: group.crawlDelay })
+      }
+    }
+  }
+  return merged
 }
 
 // A `Disallow` blocks the site root only when its path matches everything.
@@ -168,11 +197,9 @@ function checkRobots(text) {
     return { findings, passed }
   }
 
-  const wildcard = groups.find(group => group.agents.includes('*'))
-  const named = new Map()
-  for (const group of groups) {
-    for (const agent of group.agents) if (agent !== '*') named.set(agent, group)
-  }
+  const merged = mergeGroups(groups)
+  const wildcard = merged.get('*') ?? null
+  const named = new Map([...merged].filter(([agent]) => agent !== '*'))
 
   const blockedRetrieval = []
   for (const agent of RETRIEVAL_AGENTS) {
@@ -241,11 +268,11 @@ function checkRobots(text) {
       'Blocking .md mirrors or llms.txt defeats the reason for publishing them. These are the cheapest, cleanest copies an agent can read. Allow them explicitly.'))
   }
 
-  const delayed = groups.filter(group => group.crawlDelay && group.agents.some(agent => RETRIEVAL_AGENTS.includes(agent)))
+  const delayed = [...merged].filter(([agent, group]) => group.crawlDelay && RETRIEVAL_AGENTS.includes(agent))
   if (delayed.length) {
     findings.push(finding('AR108', 'low', 'access',
       'Crawl-delay is set on an answer-engine fetcher.',
-      delayed.map(group => `${group.agents.join(', ')} → Crawl-delay: ${group.crawlDelay}`).join(' | '),
+      delayed.map(([agent, group]) => `${agent} → Crawl-delay: ${group.crawlDelay}`).join(' | '),
       'Crawl-delay is unsupported by several of these fetchers and, where it is honoured, it delays the fetch that would have produced a citation. Rate-limit at the edge instead if load is the real concern.'))
   }
 

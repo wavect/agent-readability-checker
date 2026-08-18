@@ -19,6 +19,10 @@ rule also carries one of six categories (`access`, `discovery`, `mirror`,
 | `AR3xx` | Markdown mirror | H1 count, empty body, undecoded entities, raw anchors, collapsed links, fences, table column parity, canonical |
 | `AR4xx` | Page HTML | canonical, Markdown alternate, title, description, H1, JSON-LD validity and typing, publisher entity, `sameAs`, `@id`, `lang`, robots meta, client-render heuristic |
 
+### Duplicate user-agent groups are merged
+
+Per [RFC 9309](https://www.rfc-editor.org/rfc/rfc9309.html) 2.2.1, when the same user-agent token appears in more than one group, the rules of all those groups are merged and evaluated as one. A later narrow rule therefore cannot mask an earlier `Disallow: /`, and every `User-agent: *` group contributes, not just the first.
+
 ### Retrieval is not training
 
 The catalog separates crawlers that collect training data from fetchers that retrieve a page in order to answer and cite it, because most `robots.txt` files conflate the two. Blocking `GPTBot` is a licensing decision and scores as a low informational finding. Blocking `OAI-SearchBot` removes you from answers and scores as critical.
